@@ -1,0 +1,29 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "26"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq redis-tools
+      - run: make test
+      - name: talk to the server with the real redis-cli
+        run: |
+          make run PORT=6380 &
+          sleep 3
+          redis-cli -p 6380 PING | grep -q PONG
+          redis-cli -p 6380 SET user:1 gabriel | grep -q OK
+          test "$(redis-cli -p 6380 GET user:1)" = "gabriel"
+          test "$(redis-cli -p 6380 INCR hits)" = "1"
+          test "$(redis-cli -p 6380 INCR hits)" = "2"
+          redis-cli -p 6380 RPUSH queue a b c > /dev/null
+          test "$(redis-cli -p 6380 LRANGE queue 0 -1 | tr '\n' ' ')" = "a b c "
+          redis-cli -p 6380 HSET profile name ana age 30 > /dev/null
+          test "$(redis-cli -p 6380 HGET profile name)" = "ana"
+          redis-cli -p 6380 SET temp 1 EX 100 > /dev/null
+          test "$(redis-cli -p 6380 TTL temp)" -gt 90
+          redis-cli -p 6380 SAVE | grep -q OK
+          redis-benchmark -p 6380 -q -n 3000 -c 20 -t set,get,incr,lpush,lpop,sadd,hset
