@@ -1,5 +1,7 @@
 # erdis
 
+> 🇺🇸 [English version below](#english)
+
 Um banco de dados em memória compatível com Redis, em Erlang. Ele fala o protocolo do Redis de verdade (RESP), então `redis-cli`, `redis-benchmark` e qualquer client library conversam com ele. Strings, listas, hashes e sets, expiração de chaves, pipelining, publish/subscribe e snapshot em disco, em umas 600 linhas, sem nada além do OTP.
 
 Erlang foi a linguagem que eu mais queria uma desculpa pra aprender, e um servidor de rede com milhares de conexões é exatamente o problema que ela foi feita pra resolver. Cada conexão é um processo, o store é um `gen_server`, e o resto é pattern matching.
@@ -28,4 +30,32 @@ Testes: `make test` (codificação e decodificação do protocolo incluindo fram
 
 ---
 
-**EN:** a Redis-compatible in-memory data store in Erlang/OTP: RESP2 with incremental decoding and pipelining, strings/lists/hashes/sets, key expiry, pub/sub with process monitors, atomic commands through a single `gen_server`, and atomic snapshots. Works with the real `redis-cli` and `redis-benchmark` (~50k ops/s in CI). 35 EUnit tests. MIT.
+## English
+
+A Redis-compatible in-memory database, in Erlang. It speaks the real Redis protocol (RESP), so `redis-cli`, `redis-benchmark` and any client library talk to it. Strings, lists, hashes and sets, key expiry, pipelining, publish/subscribe and snapshots to disk, in about 600 lines, with nothing beyond OTP.
+
+Erlang was the language I most wanted an excuse to learn, and a network server with thousands of connections is exactly the problem it was made to solve. Every connection is a process, the store is a `gen_server`, and the rest is pattern matching.
+
+```sh
+make test              # EUnit suite
+make run PORT=6379     # serves; snapshots go to dump.erdis (SAVE)
+redis-cli SET greeting "hello"
+redis-cli GET greeting
+redis-benchmark -q -n 10000 -t set,get,incr
+```
+
+## Design
+
+- `resp.erl`: a RESP2 encoder and an incremental decoder that pulls one frame at a time out of a byte buffer (so pipelined commands and partial packets work) and also accepts telnet's "inline" protocol.
+- `erdis_cmd.erl`: the commands. Keys live in an ETS table of `{Key, Value, ExpiresAt}`; expired keys vanish on access and in a periodic sweep. Values are tagged (`str`, `list`, `hash`, `set`), so a type error returns Redis's `WRONGTYPE`.
+- `erdis_store.erl`: a `gen_server` that owns the table and executes one command at a time, which makes every command atomic exactly like Redis's single-threaded core, while the connections run in parallel in separate processes. `SAVE` writes the table with `term_to_binary` (atomically, via rename) and the file is loaded at startup.
+- `erdis_pubsub.erl`: channel subscriptions with process monitors, so a client that drops is removed on its own.
+- `erdis_server.erl`: the TCP acceptor and one process per connection. `SUBSCRIBE` puts the connection in push mode.
+
+Commands: `PING ECHO SELECT COMMAND INFO DBSIZE FLUSHDB KEYS TYPE DEL EXISTS RENAME EXPIRE PEXPIRE TTL PTTL PERSIST SET (EX PX NX XX KEEPTTL) GET GETSET MGET MSET APPEND STRLEN INCR DECR INCRBY DECRBY LPUSH RPUSH LPOP RPOP LLEN LINDEX LRANGE HSET HGET HDEL HGETALL HKEYS HLEN HEXISTS SADD SREM SMEMBERS SISMEMBER SCARD PUBLISH SUBSCRIBE UNSUBSCRIBE SAVE BGSAVE QUIT`.
+
+In CI the real `redis-benchmark` hits it at around 50 thousand SET/GET ops/s. It's not Redis, but for a learning project I was satisfied.
+
+Tests: `make test` (protocol encoding and decoding including partial and inline frames, `KEYS` globs, every command family with error cases, expiry (PX/EX/TTL/PERSIST/KEEPTTL and the sweep), and then a real server on an ephemeral port: commands over TCP, a pipeline of 100 commands in a single packet, pub/sub between two connections with automatic cleanup, 20 clients doing 1000 concurrent `INCR`s that have to end at exactly 1000, a 200 KB value and a snapshot that survives a restart). CI also drives the server with `redis-cli` and runs `redis-benchmark`.
+
+MIT.
